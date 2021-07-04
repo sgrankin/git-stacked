@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object/commitgraph"
-	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/google/go-cmp/cmp"
+	"github.com/segmentio/ksuid"
 )
 
 var (
@@ -42,8 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(baseHash)
-	fmt.Println(headHash)
 
 	cni := commitgraph.NewObjectCommitNodeIndex(repo.Storer)
 	baseCommits, err := getAllCommits(cni, *baseHash)
@@ -57,11 +58,10 @@ func main() {
 	}
 	log.Println(commits)
 
-	// Ensure all commits have change ID.  update current ref if necessary
 	// Force-push new branches
 	// Create PRs
 
-	if err := ensureChangeID(base); err != nil {
+	if err := ensureChangeID(repo, commits); err != nil {
 		log.Fatal(err)
 	}
 	if err := doPush(); err != nil {
@@ -93,7 +93,7 @@ func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map
 	hash := start
 	for {
 		if end[hash] {
-			return result, nil
+			break
 		}
 		result = append(result, hash)
 		cn, err := cni.Get(start)
@@ -103,27 +103,19 @@ func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map
 		parents := cn.ParentHashes()
 		if len(parents) > 1 {
 			log.Printf("found merge commit; ending search for commits not in base: %s", hash)
-			return result, nil
+			break
 		} else if len(parents) == 0 {
-			return result, nil
+			break
 		}
 		hash = parents[0]
 	}
-}
 
-// resolveName translates the string (which may be a hash, branch, or ref name) into the hash.
-func resolveName(s storer.Storer, name string) (plumbing.Hash, error) {
-	if ref, err := storer.ResolveReference(s, plumbing.NewBranchReferenceName(name)); err == nil {
-		return ref.Hash(), nil
+	// Reverse the results so that the commits are in commit-time order.
+	for i := len(result)/2 - 1; i >= 0; i-- {
+		opp := len(result) - 1 - i
+		result[i], result[opp] = result[opp], result[i]
 	}
-	if ref, err := storer.ResolveReference(s, plumbing.NewTagReferenceName(name)); err == nil {
-		return ref.Hash(), nil
-	}
-	if ref, err := storer.ResolveReference(s, plumbing.ReferenceName(name)); err == nil {
-		return ref.Hash(), nil
-	}
-	h := plumbing.NewHash(name)
-	return h, s.HasEncodedObject(h)
+	return result, nil
 }
 
 func determineBaseBranch(onto string) (string, error) {
@@ -135,13 +127,81 @@ func determineBaseBranch(onto string) (string, error) {
 }
 
 // TODO: should get commits as arg instead of base
-func ensureChangeID(base string) error {
-	return nil
+func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) error {
+	var prevOldHash plumbing.Hash
+	var prevNewHash plumbing.Hash
 
+	for _, h := range commits {
+		c, err := repo.CommitObject(h)
+		if err != nil {
+			return err
+		}
+		if !prevOldHash.IsZero() && !cmp.Equal([]plumbing.Hash{prevOldHash}, c.ParentHashes) {
+			return fmt.Errorf("for commit %s, got parent %v but wanted %v", c.Hash, c.ParentHashes, prevOldHash)
+		}
+		prevOldHash = c.Hash
+
+		message := appendChangeID(c.Message, ksuid.New().String())
+		if message != c.Message {
+			log.Printf("will update message for commit %v: %q", c.Hash, message)
+		}
+		c.Message = message
+		obj := repo.Storer.NewEncodedObject()
+		if err := c.Encode(obj); err != nil {
+			return err
+		}
+		prevNewHash, err = repo.Storer.SetEncodedObject(obj)
+		if err != nil {
+			return err
+		}
+	}
+	head, err := repo.Storer.Reference(plumbing.HEAD)
+	if err != nil {
+		return err
+	}
+
+	name := plumbing.HEAD
+	if head.Type() != plumbing.HashReference {
+		name = head.Target()
+	}
+
+	ref := plumbing.NewHashReference(name, prevNewHash)
+	return repo.Storer.SetReference(ref)
 }
 func doPush() error {
 	return nil
 }
+
+const changeIDToken = "Change-ID"
+
+var hasChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*`)
+var hasTrailers = regexp.MustCompile(`(?s)^(.+\n\n|\n*)(\S[^:\n]*:\s*[^\n]*(\n\s+\S*)*)(\n\S+\s*:\s*\S*(\n\s+\S*)*)*\n?$`)
+
+func appendChangeID(message, changeID string) string {
+	if hasChangeID.MatchString(message) {
+		return message
+	}
+	trailer := fmt.Sprintf("%s: %s\n", changeIDToken, changeID)
+	if message == "" {
+		return trailer
+	}
+	message = strings.TrimSuffix(message, "\n")
+	if !hasTrailers.MatchString(message) {
+		message += "\n"
+	}
+	message += "\n" + trailer
+	return message
+}
+
+// func appendChangeID(msgFilePath string) error {
+// 	f, err := os.OpenFile(msgFilePath, os.O_APPEND|os.O_WRONLY, 0o644)
+// 	if err != nil {
+// 		return fmt.Errorf("appending to %s: %w", msgFilePath, err)
+// 	}
+// 	defer f.Close()
+// 	_, err = fmt.Fprintf(f, "\n%s%s\n", changeIDPrefix, ksuid.New())
+// 	return err
+// }
 
 // * Know what the base branch is:
 //   * Default: `origin/master`
