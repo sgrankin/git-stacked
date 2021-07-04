@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object/commitgraph"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-cmp/cmp"
 	"github.com/segmentio/ksuid"
 )
@@ -57,14 +59,14 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println(commits)
-
 	// Force-push new branches
 	// Create PRs
 
-	if err := ensureChangeID(repo, commits); err != nil {
+	commits, err = ensureChangeID(repo, commits)
+	if err != nil {
 		log.Fatal(err)
 	}
-	if err := doPush(); err != nil {
+	if err := doPush(repo, commits); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -92,11 +94,12 @@ func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map
 	var result []plumbing.Hash
 	hash := start
 	for {
+		log.Printf("%s", hash)
 		if end[hash] {
 			break
 		}
 		result = append(result, hash)
-		cn, err := cni.Get(start)
+		cn, err := cni.Get(hash)
 		if err != nil {
 			return nil, err
 		}
@@ -109,6 +112,7 @@ func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map
 		}
 		hash = parents[0]
 	}
+	log.Printf("done %s", hash)
 
 	// Reverse the results so that the commits are in commit-time order.
 	for i := len(result)/2 - 1; i >= 0; i-- {
@@ -127,17 +131,22 @@ func determineBaseBranch(onto string) (string, error) {
 }
 
 // TODO: should get commits as arg instead of base
-func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) error {
+func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) ([]plumbing.Hash, error) {
 	var prevOldHash plumbing.Hash
 	var prevNewHash plumbing.Hash
+	var newCommits []plumbing.Hash
+
+	// - ensure change ID is allocated (and save it)
+	// - name the branch; it will only exist remotely though!
+	// - ensure parent branch has been noted?
 
 	for _, h := range commits {
 		c, err := repo.CommitObject(h)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !prevOldHash.IsZero() && !cmp.Equal([]plumbing.Hash{prevOldHash}, c.ParentHashes) {
-			return fmt.Errorf("for commit %s, got parent %v but wanted %v", c.Hash, c.ParentHashes, prevOldHash)
+			return nil, fmt.Errorf("for commit %s, got parent %v but wanted %v", c.Hash, c.ParentHashes, prevOldHash)
 		}
 		prevOldHash = c.Hash
 
@@ -148,16 +157,17 @@ func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) error {
 		c.Message = message
 		obj := repo.Storer.NewEncodedObject()
 		if err := c.Encode(obj); err != nil {
-			return err
+			return nil, err
 		}
 		prevNewHash, err = repo.Storer.SetEncodedObject(obj)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		newCommits = append(newCommits, prevNewHash)
 	}
 	head, err := repo.Storer.Reference(plumbing.HEAD)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	name := plumbing.HEAD
@@ -166,16 +176,53 @@ func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) error {
 	}
 
 	ref := plumbing.NewHashReference(name, prevNewHash)
-	return repo.Storer.SetReference(ref)
+	return newCommits, repo.Storer.SetReference(ref)
 }
-func doPush() error {
-	return nil
+
+func getChangeID(repo *git.Repository, commit plumbing.Hash) (string, error) {
+	c, err := repo.CommitObject(commit)
+	if err != nil {
+		return "", err
+	}
+	matches := extractChangeID.FindStringSubmatch(c.Message)
+	if len(matches) != 2 {
+		return "", fmt.Errorf("%s trailer with vaule not found in %q", changeIDToken, c.Message)
+	}
+	return matches[1], nil
+}
+func doPush(repo *git.Repository, commits []plumbing.Hash) error {
+	var refSpecs []config.RefSpec
+	for _, commit := range commits {
+		changeID, err := getChangeID(repo, commit)
+		if err != nil {
+			return err
+		}
+		refSpecs = append(refSpecs, config.RefSpec(fmt.Sprintf("%s:refs/heads/%s/%s", commit.String(), "sgrankin", changeID)))
+	}
+
+	// TODO: extract this from the configured remote
+	log.Printf("token: %q", os.Getenv("GITHUB_TOKEN"))
+	log.Printf("refspecs: %v", refSpecs)
+	return git.
+		NewRemote(repo.Storer, &config.RemoteConfig{
+			Name: "github",
+			URLs: []string{"https://github.com/sgrankin/git-stacked.git"},
+		}).
+		Push(&git.PushOptions{
+			RemoteName: "github",
+			RefSpecs:   refSpecs,
+			// Auth:       &http.TokenAuth{Token: os.Getenv("GITHUB_TOKEN")},
+			Auth:     &http.BasicAuth{Username: "sgrankin", Password: os.Getenv("GITHUB_TOKEN")},
+			Progress: os.Stderr,
+			Force:    true,
+		})
 }
 
 const changeIDToken = "Change-ID"
 
 var hasChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*`)
 var hasTrailers = regexp.MustCompile(`(?s)^(.+\n\n|\n*)(\S[^:\n]*:\s*[^\n]*(\n\s+\S*)*)(\n\S+\s*:\s*\S*(\n\s+\S*)*)*\n?$`)
+var extractChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*(.*)$`)
 
 func appendChangeID(message, changeID string) string {
 	if hasChangeID.MatchString(message) {
@@ -192,16 +239,6 @@ func appendChangeID(message, changeID string) string {
 	message += "\n" + trailer
 	return message
 }
-
-// func appendChangeID(msgFilePath string) error {
-// 	f, err := os.OpenFile(msgFilePath, os.O_APPEND|os.O_WRONLY, 0o644)
-// 	if err != nil {
-// 		return fmt.Errorf("appending to %s: %w", msgFilePath, err)
-// 	}
-// 	defer f.Close()
-// 	_, err = fmt.Fprintf(f, "\n%s%s\n", changeIDPrefix, ksuid.New())
-// 	return err
-// }
 
 // * Know what the base branch is:
 //   * Default: `origin/master`
