@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -15,7 +16,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object/commitgraph"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-github/v36/github"
 	"github.com/segmentio/ksuid"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -67,6 +70,9 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := doPush(repo, commits); err != nil {
+		log.Fatal(err)
+	}
+	if err := syncPRs(repo, commits); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -190,6 +196,36 @@ func getChangeID(repo *git.Repository, commit plumbing.Hash) (string, error) {
 	}
 	return matches[1], nil
 }
+
+func syncPRs(repo *git.Repository, commits []plumbing.Hash) error {
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")})
+	tc := oauth2.NewClient(ctx, ts)
+
+	client := github.NewClient(tc)
+
+	branches := []string{"master"}
+	for _, c := range commits {
+		changeID, err := getChangeID(repo, c)
+		if err != nil {
+			return err
+		}
+		branches = append(branches, fmt.Sprintf("%s/%s", "sgrankin", changeID))
+	}
+
+	for i := 1; i < len(branches); i++ {
+		// base := branches[i-1]
+		head := branches[i]
+		prs, _, err := client.PullRequests.List(ctx, "sgrankin", "git-stakced", &github.PullRequestListOptions{Head: head})
+		if err != nil {
+			return err
+		}
+		fmt.Println(prs)
+	}
+
+	return nil
+}
+
 func doPush(repo *git.Repository, commits []plumbing.Hash) error {
 	var refSpecs []config.RefSpec
 	for _, commit := range commits {
@@ -197,15 +233,17 @@ func doPush(repo *git.Repository, commits []plumbing.Hash) error {
 		if err != nil {
 			return err
 		}
+		// TODO: extract username from github config
+		// TODO: common branch format .. somewhere
 		refSpecs = append(refSpecs, config.RefSpec(fmt.Sprintf("%s:refs/heads/%s/%s", commit.String(), "sgrankin", changeID)))
 	}
 
-	// TODO: extract this from the configured remote
 	log.Printf("token: %q", os.Getenv("GITHUB_TOKEN"))
 	log.Printf("refspecs: %v", refSpecs)
 	return git.
 		NewRemote(repo.Storer, &config.RemoteConfig{
 			Name: "github",
+			// TODO: extract repo info from the configured remote
 			URLs: []string{"https://github.com/sgrankin/git-stacked.git"},
 		}).
 		Push(&git.PushOptions{
