@@ -197,6 +197,21 @@ func getChangeID(repo *git.Repository, commit plumbing.Hash) (string, error) {
 	return matches[1], nil
 }
 
+func getSubjectBody(repo *git.Repository, commit plumbing.Hash) (string, string, error) {
+	c, err := repo.CommitObject(commit)
+	if err != nil {
+		return "", "", err
+	}
+
+	splits := strings.SplitN(c.Message, "\n", 2)
+	subject := splits[0]
+	body := ""
+	if len(splits) > 1 {
+		body = splits[1]
+	}
+	return subject, body, nil
+}
+
 func syncPRs(repo *git.Repository, commits []plumbing.Hash) error {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")})
@@ -204,23 +219,64 @@ func syncPRs(repo *git.Repository, commits []plumbing.Hash) error {
 
 	client := github.NewClient(tc)
 
-	branches := []string{"master"}
+	base := "master" // TODO: this is a param
+	type branchDesc struct {
+		base     string
+		head     string
+		changeID string
+		subject  string
+		body     string
+	}
+	branches := []branchDesc{}
+
 	for _, c := range commits {
 		changeID, err := getChangeID(repo, c)
 		if err != nil {
 			return err
 		}
-		branches = append(branches, fmt.Sprintf("%s/%s", "sgrankin", changeID))
-	}
-
-	for i := 1; i < len(branches); i++ {
-		// base := branches[i-1]
-		head := branches[i]
-		prs, _, err := client.PullRequests.List(ctx, "sgrankin", "git-stakced", &github.PullRequestListOptions{Head: head})
+		branch := fmt.Sprintf("%s/%s", "sgrankin", changeID)
+		subject, body, err := getSubjectBody(repo, c)
 		if err != nil {
 			return err
 		}
-		fmt.Println(prs)
+
+		branches = append(branches, branchDesc{
+			base:     base,
+			head:     branch,
+			changeID: changeID,
+			subject:  subject,
+			body:     body,
+		})
+		base = branch
+	}
+
+	for _, desc := range branches {
+		log.Printf("checking branch: base=%s head=%s", desc.base, desc.head)
+		prs, _, err := client.PullRequests.List(ctx, "sgrankin", "git-stacked", &github.PullRequestListOptions{Head: "sgrankin:" + desc.head})
+		if err != nil {
+			return err
+		}
+		if len(prs) > 1 {
+			log.Fatalf("Found multiple PRs for head: %s", desc.head)
+		} else if len(prs) == 0 {
+			log.Printf("creating pr %s", desc.head)
+			// create PR
+			pr, _, err := client.PullRequests.Create(ctx, "sgrankin", "git-stacked", &github.NewPullRequest{
+				Title: &desc.subject, Body: &desc.body, Base: &desc.base, Head: &desc.head,
+			})
+			if err != nil {
+				return err
+			}
+			log.Printf("%s", *pr.HTMLURL)
+		} else {
+			pr, _, err := client.PullRequests.Edit(ctx, "sgrankin", "git-stacked", *prs[0].Number, &github.PullRequest{
+				Title: &desc.subject, Body: &desc.body, Base: &github.PullRequestBranch{Ref: &desc.base},
+			})
+			if err != nil {
+				return err
+			}
+			log.Printf("%s", *pr.HTMLURL)
+		}
 	}
 
 	return nil
@@ -240,7 +296,7 @@ func doPush(repo *git.Repository, commits []plumbing.Hash) error {
 
 	log.Printf("token: %q", os.Getenv("GITHUB_TOKEN"))
 	log.Printf("refspecs: %v", refSpecs)
-	return git.
+	err := git.
 		NewRemote(repo.Storer, &config.RemoteConfig{
 			Name: "github",
 			// TODO: extract repo info from the configured remote
@@ -254,6 +310,11 @@ func doPush(repo *git.Repository, commits []plumbing.Hash) error {
 			Progress: os.Stderr,
 			Force:    true,
 		})
+
+	if err == git.NoErrAlreadyUpToDate {
+		return nil
+	}
+	return err
 }
 
 const changeIDToken = "Change-ID"

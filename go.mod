@@ -9,5 +9,5 @@ require (
 	github.com/google/go-cmp v0.5.6
 	github.com/google/go-github/v36 v36.0.0
 	github.com/segmentio/ksuid v1.0.3
-	golang.org/x/oauth2 v0.0.0-20180821212333-d2e6202438be
+	golang.org/x/oauth2 v0.0.0-20210628180205-a41e5a781914
 )
