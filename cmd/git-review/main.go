@@ -1,4 +1,5 @@
 //git-review will create PRs for review
+
 package main
 
 import (
@@ -6,119 +7,97 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
-	"strings"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object/commitgraph"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-github/v36/github"
-	"github.com/segmentio/ksuid"
-	"golang.org/x/oauth2"
+
+	"github.com/sgrankin/git-stacked/internal/change"
+	"github.com/sgrankin/git-stacked/internal/git"
+	gh2 "github.com/sgrankin/git-stacked/internal/github"
 )
 
 var (
 	onto = flag.String("onto", "", "which branch, ref or commit we should target with reviews; defaults to master")
 )
 
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+}
+
 func main() {
 	flag.Parse()
+	ctx := context.Background()
 
-	wd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("Getwd: %v", err)
-	}
-	base, err := determineBaseBranch(*onto)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	repo, err := git.PlainOpenWithOptions(wd, &git.PlainOpenOptions{DetectDotGit: true})
+	repo, err := git.Open()
 	if err != nil {
 		log.Fatalf("git open: %v", err)
 	}
+	remote, err := repo.GetCurrentRemoteURL()
+	if err != nil {
+		log.Fatalf("getDefaultBranch: %s", err)
+	}
 
-	baseHash, err := repo.ResolveRevision(plumbing.Revision(base))
+	gh, err := gh2.Discover(ctx, remote)
+	if err != nil {
+		log.Fatalf("discover: %s", err)
+	}
+	base := gh.DefaultBranch()
+
+	baseHash, err := repo.ResolveRevision(base)
 	if err != nil {
 		log.Fatal(err)
 	}
-	headHash, err := repo.ResolveRevision(plumbing.Revision(plumbing.HEAD))
+	baseCommits, err := getAllCommits(repo, *baseHash)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	cni := commitgraph.NewObjectCommitNodeIndex(repo.Storer)
-	baseCommits, err := getAllCommits(cni, *baseHash)
+	headHash, err := repo.ResolveRevision(string(plumbing.HEAD))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	commits, err := getNewCommits(cni, *headHash, baseCommits)
+	commits, err := getNewCommits(repo, *headHash, baseCommits)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Println(commits)
-	// Force-push new branches
-	// Create PRs
 
-	commits, err = ensureChangeID(repo, commits)
+	changes, err := ensureChangeID(gh, repo, commits)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := doPush(repo, commits); err != nil {
+
+	if err := doPush(gh, repo, changes); err != nil {
 		log.Fatal(err)
 	}
-	if err := syncPRs(repo, commits); err != nil {
+	if err := syncPRs(gh, repo, changes); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func getAllCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash) (map[plumbing.Hash]bool, error) {
-	pending := []plumbing.Hash{start}
+func getAllCommits(repo *git.Repo, start plumbing.Hash) (map[plumbing.Hash]bool, error) {
 	seen := map[plumbing.Hash]bool{}
-	for len(pending) > 0 {
-		var h plumbing.Hash
-		pending, h = pending[:len(pending)-1], pending[len(pending)-1]
-		n, err := cni.Get(h)
-		if err != nil {
-			return nil, err
-		}
-		if seen[n.ID()] {
-			continue
-		}
-		seen[n.ID()] = true
-		pending = append(pending, n.ParentHashes()...)
-	}
-	return seen, nil
+	err := repo.WalkCommits(start, func(cn commitgraph.CommitNode) error {
+		seen[cn.ID()] = true
+		return nil
+	})
+	return seen, err
 }
 
-func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map[plumbing.Hash]bool) ([]plumbing.Hash, error) {
+func getNewCommits(repo *git.Repo, start plumbing.Hash, end map[plumbing.Hash]bool) ([]plumbing.Hash, error) {
 	var result []plumbing.Hash
-	hash := start
-	for {
-		log.Printf("%s", hash)
-		if end[hash] {
-			break
+	if err := repo.WalkCommits(start, func(cn commitgraph.CommitNode) error {
+		if end[cn.ID()] {
+			return git.SkipCommit
 		}
-		result = append(result, hash)
-		cn, err := cni.Get(hash)
-		if err != nil {
-			return nil, err
-		}
-		parents := cn.ParentHashes()
-		if len(parents) > 1 {
-			log.Printf("found merge commit; ending search for commits not in base: %s", hash)
-			break
-		} else if len(parents) == 0 {
-			break
-		}
-		hash = parents[0]
+		// TODO: error on merge commits?
+		result = append(result, cn.ID())
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	log.Printf("done %s", hash)
 
 	// Reverse the results so that the commits are in commit-time order.
 	for i := len(result)/2 - 1; i >= 0; i-- {
@@ -128,224 +107,67 @@ func getNewCommits(cni commitgraph.CommitNodeIndex, start plumbing.Hash, end map
 	return result, nil
 }
 
-func determineBaseBranch(onto string) (string, error) {
-	if onto != "" {
-		return onto, nil
-	}
-	// TODO: check config, check defaults, check github default branch
-	return "master", nil
+type Change struct {
+	*change.Change
+	IsWIP bool
+	Head  string
+	Base  string
 }
 
-// TODO: should get commits as arg instead of base
-func ensureChangeID(repo *git.Repository, commits []plumbing.Hash) ([]plumbing.Hash, error) {
-	var prevOldHash plumbing.Hash
-	var prevNewHash plumbing.Hash
-	var newCommits []plumbing.Hash
+func ensureChangeID(gh *gh2.Client, repo *git.Repo, commits []plumbing.Hash) ([]*Change, error) {
+	if len(commits) == 0 {
+		return nil, nil
+	}
+	lastHead := gh.DefaultBranch()
 
-	// - ensure change ID is allocated (and save it)
-	// - name the branch; it will only exist remotely though!
-	// - ensure parent branch has been noted?
-
+	var changes []*Change
+	var lastHash *plumbing.Hash
 	for _, h := range commits {
-		c, err := repo.CommitObject(h)
+		change, err := change.Ensure(repo, h, lastHash)
 		if err != nil {
 			return nil, err
 		}
-		if !prevOldHash.IsZero() && !cmp.Equal([]plumbing.Hash{prevOldHash}, c.ParentHashes) {
-			return nil, fmt.Errorf("for commit %s, got parent %v but wanted %v", c.Hash, c.ParentHashes, prevOldHash)
+		lastHash = &change.Hash
+		c := &Change{
+			Change: change,
+			IsWIP:  isWIP.MatchString(change.Title),
+			Head:   fmt.Sprintf("%s/%s", gh.Username(), change.ID),
+			Base:   lastHead,
 		}
-		prevOldHash = c.Hash
+		changes = append(changes, c)
+		lastHead = c.Head
 
-		message := appendChangeID(c.Message, ksuid.New().String())
-		if message != c.Message {
-			log.Printf("will update message for commit %v: %q", c.Hash, message)
-		}
-		c.Message = message
-		obj := repo.Storer.NewEncodedObject()
-		if err := c.Encode(obj); err != nil {
-			return nil, err
-		}
-		prevNewHash, err = repo.Storer.SetEncodedObject(obj)
-		if err != nil {
-			return nil, err
-		}
-		newCommits = append(newCommits, prevNewHash)
 	}
-	head, err := repo.Storer.Reference(plumbing.HEAD)
-	if err != nil {
-		return nil, err
-	}
-
-	name := plumbing.HEAD
-	if head.Type() != plumbing.HashReference {
-		name = head.Target()
-	}
-
-	ref := plumbing.NewHashReference(name, prevNewHash)
-	return newCommits, repo.Storer.SetReference(ref)
+	return changes, repo.UpdateHead(*lastHash)
 }
 
-func getChangeID(repo *git.Repository, commit plumbing.Hash) (string, error) {
-	c, err := repo.CommitObject(commit)
-	if err != nil {
-		return "", err
-	}
-	matches := extractChangeID.FindStringSubmatch(c.Message)
-	if len(matches) != 2 {
-		return "", fmt.Errorf("%s trailer with vaule not found in %q", changeIDToken, c.Message)
-	}
-	return matches[1], nil
-}
+var isWIP = regexp.MustCompile(`(?i)^(wip|\[wip\])`)
 
-func getSubjectBody(repo *git.Repository, commit plumbing.Hash) (string, string, error) {
-	c, err := repo.CommitObject(commit)
-	if err != nil {
-		return "", "", err
-	}
-
-	splits := strings.SplitN(c.Message, "\n", 2)
-	subject := splits[0]
-	body := ""
-	if len(splits) > 1 {
-		body = splits[1]
-	}
-	return subject, body, nil
-}
-
-func syncPRs(repo *git.Repository, commits []plumbing.Hash) error {
+func syncPRs(gh *gh2.Client, repo *git.Repo, changes []*Change) error {
 	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")})
-	tc := oauth2.NewClient(ctx, ts)
-
-	client := github.NewClient(tc)
-
-	base := "master" // TODO: this is a param
-	type branchDesc struct {
-		base     string
-		head     string
-		changeID string
-		subject  string
-		body     string
-	}
-	branches := []branchDesc{}
-
-	for _, c := range commits {
-		changeID, err := getChangeID(repo, c)
+	for _, c := range changes {
+		draft := isWIP.MatchString(c.Title)
+		pr, err := gh.GetPull(ctx, c.Head)
 		if err != nil {
 			return err
 		}
-		branch := fmt.Sprintf("%s/%s", "sgrankin", changeID)
-		subject, body, err := getSubjectBody(repo, c)
-		if err != nil {
-			return err
-		}
-
-		branches = append(branches, branchDesc{
-			base:     base,
-			head:     branch,
-			changeID: changeID,
-			subject:  subject,
-			body:     body,
-		})
-		base = branch
-	}
-
-	for _, desc := range branches {
-		log.Printf("checking branch: base=%s head=%s", desc.base, desc.head)
-		prs, _, err := client.PullRequests.List(ctx, "sgrankin", "git-stacked", &github.PullRequestListOptions{Head: "sgrankin:" + desc.head})
-		if err != nil {
-			return err
-		}
-		if len(prs) > 1 {
-			log.Fatalf("Found multiple PRs for head: %s", desc.head)
-		} else if len(prs) == 0 {
-			log.Printf("creating pr %s", desc.head)
-			// create PR
-			pr, _, err := client.PullRequests.Create(ctx, "sgrankin", "git-stacked", &github.NewPullRequest{
-				Title: &desc.subject, Body: &desc.body, Base: &desc.base, Head: &desc.head,
-			})
-			if err != nil {
+		if pr == nil {
+			if err := gh.CreatePull(ctx, c.Head, c.Base, c.Title, c.Body, draft); err != nil {
 				return err
 			}
-			log.Printf("%s", *pr.HTMLURL)
 		} else {
-			pr, _, err := client.PullRequests.Edit(ctx, "sgrankin", "git-stacked", *prs[0].Number, &github.PullRequest{
-				Title: &desc.subject, Body: &desc.body, Base: &github.PullRequestBranch{Ref: &desc.base},
-			})
-			if err != nil {
+			if err := gh.UpdatePull(ctx, *pr.Number, c.Base, c.Title, c.Body, draft); err != nil {
 				return err
 			}
-			log.Printf("%s", *pr.HTMLURL)
 		}
 	}
-
 	return nil
 }
 
-func doPush(repo *git.Repository, commits []plumbing.Hash) error {
-	var refSpecs []config.RefSpec
-	for _, commit := range commits {
-		changeID, err := getChangeID(repo, commit)
-		if err != nil {
-			return err
-		}
-		// TODO: extract username from github config
-		// TODO: common branch format .. somewhere
-		refSpecs = append(refSpecs, config.RefSpec(fmt.Sprintf("%s:refs/heads/%s/%s", commit.String(), "sgrankin", changeID)))
+func doPush(gh *gh2.Client, repo *git.Repo, changes []*Change) error {
+	refSpecs := map[plumbing.Hash]string{}
+	for _, c := range changes {
+		refSpecs[c.Hash] = c.Head
 	}
-
-	log.Printf("token: %q", os.Getenv("GITHUB_TOKEN"))
-	log.Printf("refspecs: %v", refSpecs)
-	err := git.
-		NewRemote(repo.Storer, &config.RemoteConfig{
-			Name: "github",
-			// TODO: extract repo info from the configured remote
-			URLs: []string{"https://github.com/sgrankin/git-stacked.git"},
-		}).
-		Push(&git.PushOptions{
-			RemoteName: "github",
-			RefSpecs:   refSpecs,
-			// Auth:       &http.TokenAuth{Token: os.Getenv("GITHUB_TOKEN")},
-			Auth:     &http.BasicAuth{Username: "sgrankin", Password: os.Getenv("GITHUB_TOKEN")},
-			Progress: os.Stderr,
-			Force:    true,
-		})
-
-	if err == git.NoErrAlreadyUpToDate {
-		return nil
-	}
-	return err
+	return gh.Push(repo.Storer(), refSpecs)
 }
-
-const changeIDToken = "Change-ID"
-
-var hasChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*`)
-var hasTrailers = regexp.MustCompile(`(?s)^(.+\n\n|\n*)(\S[^:\n]*:\s*[^\n]*(\n\s+\S*)*)(\n\S+\s*:\s*\S*(\n\s+\S*)*)*\n?$`)
-var extractChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*(.*)$`)
-
-func appendChangeID(message, changeID string) string {
-	if hasChangeID.MatchString(message) {
-		return message
-	}
-	trailer := fmt.Sprintf("%s: %s\n", changeIDToken, changeID)
-	if message == "" {
-		return trailer
-	}
-	message = strings.TrimSuffix(message, "\n")
-	if !hasTrailers.MatchString(message) {
-		message += "\n"
-	}
-	message += "\n" + trailer
-	return message
-}
-
-// * Know what the base branch is:
-//   * Default: `origin/master`
-//   * Default: the remote's (github) default branch
-//   * Maybe: Configure the branch with `git review --onto <branch>`
-// * Find commits that are not present in the branch
-// * Update all of the commit messages that do not have a `Change-ID:` header.
-//   * Rebase in place, effectively, only modifying the commit message.
-// * For each change:
-//   * Force-push a ref named with the change-id.
-//   * Create or update the PR onto the base branch (if first commit) or onto previous change.
