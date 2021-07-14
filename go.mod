@@ -2,7 +2,7 @@ module github.com/sgrankin/git-stacked
 
 go 1.16
 
-replace github.com/go-git/go-git/v5 => ../go-git/
+replace github.com/go-git/go-git/v5 => github.com/sgrankin/go-git/v5 v5.4.3-0.20210715010312-0e84379a9810
 
 require (
 	github.com/go-git/go-git/v5 v5.4.2
