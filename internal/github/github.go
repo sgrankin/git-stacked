@@ -107,7 +107,7 @@ func ghClient(ctx context.Context, token string) *github.Client {
 func (c *Client) GetPull(ctx context.Context, head string) (*github.PullRequest, error) {
 	ghClient := ghClient(ctx, c.token)
 	prs, _, err := ghClient.PullRequests.List(ctx, c.owner, c.repo, &github.PullRequestListOptions{
-		Head: fmt.Sprintf("%s:%s", c.username, head),
+		Head: fmt.Sprintf("%s:%s", c.owner, head),
 	})
 	if err != nil {
 		return nil, err
