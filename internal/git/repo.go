@@ -107,10 +107,11 @@ func (r *Repo) GetCurrentRemoteURL() (string, error) {
 	remote := ""
 	if ref.Name().IsBranch() {
 		br, err := r.repo.Branch(ref.Name().Short())
-		if err != nil {
+		if err == nil {
+			remote = br.Remote
+		} else if err != git.ErrBranchNotFound {
 			return "", err
 		}
-		remote = br.Remote
 	}
 
 	remotes, err := r.repo.Remotes()
