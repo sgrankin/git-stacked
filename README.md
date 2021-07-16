@@ -1,3 +1,10 @@
+# Install
+* Clone the repo
+* `go install ./cmd/git-review/`
+
+Don't use `go install` or `go get` directly with the repo URL: `replace`
+directives in `go.mod` will cause it to fail or not pick up a bug fix, silently
+breaking pushes.
 
 # Design
 
