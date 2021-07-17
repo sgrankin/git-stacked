@@ -98,11 +98,12 @@ func (r *Repo) WalkCommits(h plumbing.Hash, fn CommitWalkFunc) error {
 	return nil
 }
 
-func (r *Repo) GetCurrentRemoteURL() (string, error) {
+// GetCurrentRemoteURL remotes remote name and URL, or error
+func (r *Repo) GetCurrentRemoteURL() (string, string, error) {
 	// Check if the current branch has a remote configured.
 	ref, err := r.repo.Head()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	remote := ""
 	if ref.Name().IsBranch() {
@@ -110,20 +111,20 @@ func (r *Repo) GetCurrentRemoteURL() (string, error) {
 		if err == nil {
 			remote = br.Remote
 		} else if err != git.ErrBranchNotFound {
-			return "", err
+			return "", "", err
 		}
 	}
 
 	remotes, err := r.repo.Remotes()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Find the first matching remote, return the first URL.
 	for _, r := range remotes {
 		if remote == "" || r.Config().Name == remote {
-			return r.Config().URLs[0], nil
+			return r.Config().Name, r.Config().URLs[0], nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }

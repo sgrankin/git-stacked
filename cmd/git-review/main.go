@@ -28,18 +28,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("git open: %v", err)
 	}
-	remote, err := repo.GetCurrentRemoteURL()
+	remoteName, remoteURL, err := repo.GetCurrentRemoteURL()
 	if err != nil {
 		log.Fatalf("getDefaultBranch: %s", err)
 	}
 
-	gh, err := gh2.Discover(ctx, remote)
+	gh, err := gh2.Discover(ctx, remoteURL)
 	if err != nil {
 		log.Fatalf("discover: %s", err)
 	}
 	base := gh.DefaultBranch()
 
-	baseHash, err := repo.ResolveRevision(base)
+	// On the assumption the remote branch is always at least as up to date as the
+	// local, we will diff the current head against the remote.  This makes sure we get the right commits:
+	// - when one does a remote fetch but does not pull into the local main
+	// - when one is stacking commits _on_ the local main (without pushing it)
+	baseHash, err := repo.ResolveRevision(remoteName + "/" + base)
 	if err != nil {
 		log.Fatal(err)
 	}
