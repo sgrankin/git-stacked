@@ -11,9 +11,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object/commitgraph"
 
-	"github.com/sgrankin/git-stacked/internal/change"
-	"github.com/sgrankin/git-stacked/internal/git"
-	gh2 "github.com/sgrankin/git-stacked/internal/github"
+	"sgrankin.dev/git-stacked/internal/change"
+	"sgrankin.dev/git-stacked/internal/git"
+	gh2 "sgrankin.dev/git-stacked/internal/github"
 )
 
 func init() {

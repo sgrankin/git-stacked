@@ -8,7 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/segmentio/ksuid"
 
-	"github.com/sgrankin/git-stacked/internal/git"
+	"sgrankin.dev/git-stacked/internal/git"
 )
 
 type Change struct {

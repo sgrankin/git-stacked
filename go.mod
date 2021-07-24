@@ -1,4 +1,4 @@
-module github.com/sgrankin/git-stacked
+module sgrankin.dev/git-stacked
 
 go 1.16
 
