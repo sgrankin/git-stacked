@@ -1,5 +1,5 @@
 # Install
-* `sgrankin.dev/git-stacked/cmd/git-review@master`
+* `sgrankin.dev/git-stacked/cmd/git-review@main`
 
 # Workflow
 * Be working in a branch of `master` /` main`
@@ -20,3 +20,6 @@
 * For each change:
   * Force-push a ref named with the change-id.
   * Create or update the PR onto the base branch (if first commit) or onto previous change.
+
+# Other tools
+* `git-absorb` (https://github.com/tummychow/git-absorb) to make amending a series of commits easy.
