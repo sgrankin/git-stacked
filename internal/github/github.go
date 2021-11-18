@@ -71,6 +71,7 @@ func (c *Client) DefaultBranch() string {
 
 // `refs` is a map from hash to remote head name.
 func (c *Client) Push(storer storage.Storer, refs map[plumbing.Hash]string) error {
+	log.Printf("Pushing refs: %v", refs)
 	var refSpecs []config.RefSpec
 	for h, ref := range refs {
 		refSpecs = append(refSpecs, config.RefSpec(

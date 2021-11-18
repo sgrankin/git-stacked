@@ -61,16 +61,23 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println(commits)
+	log.Printf("Commits to sync: %v", commits)
+	if len(commits) == 0 {
+		return
+	}
 
+	log.Printf("Ensuring change ID in commits")
 	changes, err := ensureChangeID(gh, repo, commits)
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	log.Printf("Pushing commits to github")
 	if err := doPush(gh, repo, changes); err != nil {
 		log.Fatal(err)
 	}
+
+	log.Printf("Syncing PRs")
 	if err := syncPRs(gh, repo, changes); err != nil {
 		log.Fatal(err)
 	}
