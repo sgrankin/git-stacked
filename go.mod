@@ -2,10 +2,8 @@ module sgrankin.dev/git-stacked
 
 go 1.17
 
-replace github.com/go-git/go-git/v5 => github.com/sgrankin/go-git/v5 v5.4.3-0.20210715010312-0e84379a9810
-
 require (
-	github.com/go-git/go-git/v5 v5.4.2
+	github.com/go-git/go-git/v5 v5.4.3-0.20211108221022-e4fcd078d42e
 	github.com/google/go-github/v36 v36.0.0
 	github.com/segmentio/ksuid v1.0.4
 	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8
