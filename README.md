@@ -1,28 +1,20 @@
 # Install
-* Clone the repo
-* `go install ./cmd/git-review/`
+* `sgrankin.dev/git-stacked/cmd/git-review@master`
 
-Don't use `go install` or `go get` directly with the repo URL: `replace`
-directives in `go.mod` will cause it to fail or not pick up a bug fix, silently
-breaking pushes.
+# Workflow
+* Be working in a branch of `master` /` main`
+* Create and tend a series of commits.
+* When ready for review, run `git review`.  PRs are created, one for each commit, dependent on each other.
+* Amend commits as ready.  Re-run `git review` to update all PRs.
+* Merge the first commit.
+* Pull & rebase your branch.
+* `git review` to update PRs.
 
-# Design
-
-## Interface
-* Be working in a branch of `master` or on `master`
-* Create and tend commits.
-* When ready for review, run `git review`.
-* Merge PRs (via rebase) or run `git review --merge` to merge all approved PRs that are ready.
-* `git pull --rebase`
-* Run `git review` to update all unmerged PRs.
-
-## Algorithms
+# Algorithms
 ### `git-review`
 * Know what the base branch is:
-  * Default: `origin/master`
   * Default: the remote's (github) default branch
-  * Maybe: Configure the branch with `git review --onto <branch>`
-* Find commits that are not present in the branch
+* Find commits that are not present in the branch.
 * Update all of the commit messages that do not have a `Change-ID:` header.
   * Rebase in place, effectively, only modifying the commit message.
 * For each change:
