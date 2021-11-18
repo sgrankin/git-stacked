@@ -26,7 +26,7 @@ type Client struct {
 	defaultBranch string
 }
 
-var githubURL = regexp.MustCompile(`^(?:https://github.com/|git@github.com:)([^/]+)/(.+).git$`)
+var githubURL = regexp.MustCompile(`^(?:https://github.com/|git@github.com:)([^/]+)/(.+?)(\.git)?$`)
 
 func Discover(ctx context.Context, remoteURL string) (*Client, error) {
 	log.Println(remoteURL)

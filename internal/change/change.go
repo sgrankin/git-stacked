@@ -48,7 +48,7 @@ func Ensure(repo *git.Repo, h plumbing.Hash, base *plumbing.Hash) (*Change, erro
 const changeIDToken = "Change-ID"
 
 var hasChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*`)
-var hasTrailers = regexp.MustCompile(`(?s)^(.+\n\n|\n*)(\S[^:\n]*:\s*[^\n]*(\n\s+\S*)*)(\n\S+\s*:\s*\S*(\n\s+\S*)*)*\n?$`)
+var hasTrailers = regexp.MustCompile(`(?s)^(.+\n+)?\n+(\S[^:\n]*:\s*[^\n]*(\n\s+\S*)*)(\n\S+\s*:\s*\S*(\n\s+\S*)*)*\n?$`)
 var extractChangeID = regexp.MustCompile(`(?m)^` + changeIDToken + `\s*:\s*(.*)$`)
 
 func appendChangeID(message, changeID string) string {
