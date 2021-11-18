@@ -130,6 +130,7 @@ func (c *Client) CreatePull(ctx context.Context, head, base, title, body string)
 			Base:  &base,
 			Title: &title,
 			Body:  &body,
+			Draft: github.Bool(true),
 		})
 	return pr, err
 }
