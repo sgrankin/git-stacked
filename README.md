@@ -1,5 +1,5 @@
 # Install
-* `sgrankin.dev/git-stacked/cmd/git-review@main`
+* `go install sgrankin.dev/git-stacked/cmd/git-review@main`
 
 # Workflow
 * Be working in a branch of `master` /` main`
