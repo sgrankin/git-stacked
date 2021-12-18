@@ -65,6 +65,7 @@ func Discover(ctx context.Context, remoteURL string) (*Client, error) {
 func (c *Client) Username() string {
 	return c.username
 }
+
 func (c *Client) DefaultBranch() string {
 	return c.defaultBranch
 }
@@ -122,7 +123,7 @@ func (c *Client) GetPull(ctx context.Context, head string) (*github.PullRequest,
 	return prs[0], nil
 }
 
-func (c *Client) CreatePull(ctx context.Context, head, base, title, body string) (*github.PullRequest, error) {
+func (c *Client) CreatePull(ctx context.Context, head, base, title, body string, draft bool) (*github.PullRequest, error) {
 	ghClient := ghClient(ctx, c.token)
 	pr, _, err := ghClient.PullRequests.Create(ctx,
 		c.owner, c.repo, &github.NewPullRequest{
@@ -130,7 +131,7 @@ func (c *Client) CreatePull(ctx context.Context, head, base, title, body string)
 			Base:  &base,
 			Title: &title,
 			Body:  &body,
-			Draft: github.Bool(true),
+			Draft: github.Bool(draft),
 		})
 	return pr, err
 }

@@ -1,4 +1,4 @@
-//git-review will create PRs for review
+// git-review will create PRs for review
 
 package main
 
@@ -21,6 +21,7 @@ func init() {
 }
 
 func main() {
+	draft := flag.Bool("draft", true, "Create PRs as draft.  (Not available in all repos.)")
 	flag.Parse()
 	ctx := context.Background()
 
@@ -78,7 +79,7 @@ func main() {
 	}
 
 	log.Printf("Syncing PRs")
-	if err := syncPRs(gh, repo, changes); err != nil {
+	if err := syncPRs(gh, repo, changes, *draft); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -145,7 +146,7 @@ func ensureChangeID(gh *gh2.Client, repo *git.Repo, commits []plumbing.Hash) ([]
 	return changes, repo.UpdateHead(*lastHash)
 }
 
-func syncPRs(gh *gh2.Client, repo *git.Repo, changes []*Change) error {
+func syncPRs(gh *gh2.Client, repo *git.Repo, changes []*Change, draft bool) error {
 	ctx := context.Background()
 	for _, c := range changes {
 		pr, err := gh.GetPull(ctx, c.Head)
@@ -153,7 +154,7 @@ func syncPRs(gh *gh2.Client, repo *git.Repo, changes []*Change) error {
 			return err
 		}
 		if pr == nil {
-			pr, err = gh.CreatePull(ctx, c.Head, c.Base, c.Title, c.Body)
+			pr, err = gh.CreatePull(ctx, c.Head, c.Base, c.Title, c.Body, draft)
 		} else {
 			pr, err = gh.UpdatePull(ctx, *pr.Number, c.Base, c.Title, c.Body)
 		}
